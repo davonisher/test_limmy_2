@@ -35,7 +35,7 @@ AI_TOOL_COMPANIES = [
 
 async def scrape_bing_news():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)  # Set headless=False if you want to see the browser
+        browser = await p.chromium.launch(headless=False)  # Set headless=False if you want to see the browser
         page = await browser.new_page()
 
         all_data = []

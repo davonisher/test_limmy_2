@@ -2,3 +2,8 @@ requests==2.31.0
 beautifulsoup4==4.12.2
 lxml==4.9.3 
 playwright==1.53
+aiohttp==3.9.1
+asyncio-throttle==1.0.2
+numpy==1.24.3
+cupy-cuda12x==12.2.0
+pandas==2.0.3
