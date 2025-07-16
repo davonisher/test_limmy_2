@@ -5,7 +5,7 @@ from bs4 import BeautifulSoup
 import csv
 import pandas as pd
 import numpy as np
-import cupy as cp
+import torch
 from asyncio_throttle import Throttler
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -53,13 +53,12 @@ class GPUAcceleratedScraper:
         self.all_data = []
         
         # Initialize GPU if available
-        try:
-            self.gpu_available = True
-            logger.info(f"GPU detected: {cp.cuda.Device(0).name}")
-            logger.info(f"GPU memory: {cp.cuda.Device(0).mem_info[1] / 1024**3:.2f} GB")
-        except Exception as e:
-            self.gpu_available = False
-            logger.warning(f"GPU not available: {e}")
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if torch.cuda.is_available():
+            logger.info(f"GPU detected: {torch.cuda.get_device_name(0)}")
+            logger.info(f"GPU count: {torch.cuda.device_count()}")
+        else:
+            logger.warning("GPU not available, using CPU.")
     
     async def scrape_company_news(self, session, company, semaphore):
         """Scrape news for a single company with rate limiting"""
@@ -122,91 +121,63 @@ class GPUAcceleratedScraper:
         return articles
     
     def process_data_gpu(self, data):
-        """Process scraped data using GPU acceleration"""
-        if not self.gpu_available or not data:
+        """Process scraped data using GPU acceleration (PyTorch)"""
+        if not data:
             return data
-        
         try:
-            # Convert to pandas DataFrame for easier processing
             df = pd.DataFrame(data)
-            
-            # GPU-accelerated text processing
-            if len(df) > 0:
-                # Create GPU arrays for text processing
-                titles = cp.array(df['title'].fillna('').astype(str).values)
-                snippets = cp.array(df['snippet'].fillna('').astype(str).values)
-                
-                # GPU-accelerated text length calculation
-                title_lengths = cp.char.str_len(titles)
-                snippet_lengths = cp.char.str_len(snippets)
-                
-                # Add processed features back to DataFrame
-                df['title_length'] = cp.asnumpy(title_lengths)
-                df['snippet_length'] = cp.asnumpy(snippet_lengths)
-                df['has_image'] = df['image_url'] != 'No Image'
-                
-                # GPU-accelerated duplicate detection (simplified)
-                title_hashes = cp.array([hash(title) for title in titles])
-                unique_mask = cp.unique(title_hashes, return_index=True)[1]
-                df = df.iloc[cp.asnumpy(unique_mask)]
-                
-                logger.info(f"GPU processed {len(df)} articles")
-                
-                return df.to_dict('records')
-            
+            if len(df) == 0:
+                return data
+            # Move string lengths to GPU for batch processing
+            titles = df['title'].fillna('').astype(str).values
+            snippets = df['snippet'].fillna('').astype(str).values
+            # Convert to list of lengths
+            title_lengths = torch.tensor([len(t) for t in titles], device=self.device)
+            snippet_lengths = torch.tensor([len(s) for s in snippets], device=self.device)
+            # Add processed features back to DataFrame
+            df['title_length'] = title_lengths.cpu().numpy()
+            df['snippet_length'] = snippet_lengths.cpu().numpy()
+            df['has_image'] = df['image_url'] != 'No Image'
+            # GPU-accelerated duplicate detection (hashing on GPU)
+            title_hashes = torch.tensor([hash(t) for t in titles], device=self.device)
+            _, unique_indices = torch.unique(title_hashes, return_inverse=False, return_counts=False, sorted=False, return_index=True)
+            df = df.iloc[unique_indices.cpu().numpy()]
+            logger.info(f"GPU processed {len(df)} articles (PyTorch)")
+            return df.to_dict('records')
         except Exception as e:
             logger.error(f"GPU processing error: {e}")
-        
         return data
     
     async def scrape_all_companies(self):
         """Scrape all companies concurrently"""
         start_time = time.time()
-        
-        # Create semaphore to limit concurrent requests
         semaphore = asyncio.Semaphore(self.max_concurrent)
-        
-        # Create aiohttp session for concurrent requests
         connector = aiohttp.TCPConnector(limit=self.max_concurrent, limit_per_host=5)
         timeout = aiohttp.ClientTimeout(total=30)
-        
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-            # Create tasks for all companies
             tasks = [
                 self.scrape_company_news(session, company, semaphore)
                 for company in AI_TOOL_COMPANIES
             ]
-            
-            # Execute all tasks concurrently
             logger.info(f"Starting concurrent scraping of {len(AI_TOOL_COMPANIES)} companies...")
             results = await asyncio.gather(*tasks, return_exceptions=True)
-            
-            # Collect all results
             for result in results:
                 if isinstance(result, list):
                     self.all_data.extend(result)
                 else:
                     logger.error(f"Task failed: {result}")
-        
-        # Process data with GPU acceleration
-        logger.info(f"Processing {len(self.all_data)} articles with GPU acceleration...")
+        logger.info(f"Processing {len(self.all_data)} articles with GPU acceleration (PyTorch)...")
         processed_data = self.process_data_gpu(self.all_data)
-        
-        # Save to CSV
         self.save_to_csv(processed_data)
-        
         end_time = time.time()
         logger.info(f"Scraping completed in {end_time - start_time:.2f} seconds")
         logger.info(f"Total articles scraped: {len(processed_data)}")
-        
         return processed_data
     
     def save_to_csv(self, data):
-        """Save data to CSV file"""
         if not data:
             logger.warning("No data to save")
             return
-        
         filename = 'bing_news_articles_gpu.csv'
         with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
             fieldnames = ['company', 'title', 'link', 'image_url', 'source', 'snippet', 'title_length', 'snippet_length', 'has_image']
@@ -214,11 +185,9 @@ class GPUAcceleratedScraper:
             writer.writeheader()
             for row in data:
                 writer.writerow(row)
-        
         logger.info(f"Data saved to {filename}")
 
 async def main():
-    """Main function to run the GPU-accelerated scraper"""
     scraper = GPUAcceleratedScraper(max_concurrent=15, gpu_batch_size=1000)
     await scraper.scrape_all_companies()
 
