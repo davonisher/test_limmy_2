@@ -202,6 +202,8 @@ class GPUAcceleratedScraper:
             if len(df) == 0:
                 return data
             
+            logger.info(f"Starting GPU processing of {len(df)} articles...")
+            
             # Move string lengths to GPU for batch processing
             titles = df['title'].fillna('').astype(str).values
             snippets = df['snippet'].fillna('').astype(str).values
@@ -217,7 +219,19 @@ class GPUAcceleratedScraper:
             
             # GPU-accelerated duplicate detection (hashing on GPU)
             title_hashes = torch.tensor([hash(t) for t in titles], device=self.device)
-            _, unique_indices = torch.unique(title_hashes, return_inverse=False, return_counts=False, sorted=False, return_index=True)
+            
+            # Fixed torch.unique() call for newer PyTorch versions
+            try:
+                # Try newer API first
+                unique_hashes, inverse_indices, counts = torch.unique(title_hashes, return_inverse=True, return_counts=True, sorted=False)
+                # Get indices of first occurrence of each unique hash
+                unique_indices = torch.zeros_like(unique_hashes, dtype=torch.long)
+                for i, hash_val in enumerate(unique_hashes):
+                    unique_indices[i] = torch.where(title_hashes == hash_val)[0][0]
+            except:
+                # Fallback to older API
+                unique_hashes, unique_indices = torch.unique(title_hashes, return_index=True)
+            
             df = df.iloc[unique_indices.cpu().numpy()]
             
             # GPU-accelerated sentiment analysis (simplified)
@@ -232,12 +246,24 @@ class GPUAcceleratedScraper:
             df['negative_words'] = negative_count.cpu().numpy()
             df['sentiment_score'] = (positive_count - negative_count).cpu().numpy()
             
-            logger.info(f"GPU processed {len(df)} articles (PyTorch)")
+            # Log GPU utilization
+            if torch.cuda.is_available():
+                gpu_memory_used = torch.cuda.memory_allocated() / 1024**3  # GB
+                gpu_memory_total = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
+                logger.info(f"GPU memory used: {gpu_memory_used:.2f} GB / {gpu_memory_total:.2f} GB")
+            
+            logger.info(f"GPU processed {len(df)} articles (PyTorch) - Removed {len(data) - len(df)} duplicates")
             return df.to_dict('records')
             
         except Exception as e:
             logger.error(f"GPU processing error: {e}")
-        return data
+            logger.info("Falling back to CPU processing...")
+            # Fallback to basic processing without GPU
+            df = pd.DataFrame(data)
+            df['title_length'] = df['title'].str.len()
+            df['snippet_length'] = df['snippet'].str.len()
+            df['has_image'] = df['image_url'] != 'No Image'
+            return df.to_dict('records')
     
     async def scrape_all_companies(self):
         """Scrape all companies using batch processing with Playwright"""
@@ -297,7 +323,7 @@ class GPUAcceleratedScraper:
         logger.info(f"Data saved to {filename}")
 
 async def main():
-    scraper = GPUAcceleratedScraper(max_concurrent=20, gpu_batch_size=1000)
+    scraper = GPUAcceleratedScraper(max_concurrent=2, gpu_batch_size=1000)
     await scraper.scrape_all_companies()
 
 if __name__ == "__main__":
