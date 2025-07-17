@@ -51,7 +51,7 @@ class OllamaClient:
     Simple Ollama client for local LLM inference.
     Assumes Ollama is running locally on port 11434.
     """
-    def __init__(self, model="llama3"):
+    def __init__(self, model="llama3.2"):
         self.base_url = "http://localhost:11434"
         self.model = model
 
@@ -125,7 +125,7 @@ class GPUAcceleratedScraper:
             logger.warning("GPU not available, using CPU.")
 
         # Initialize Ollama client
-        self.ollama = OllamaClient(model="gemma3n")
+        self.ollama = OllamaClient(model="llama3.2")
     
     async def scrape_company_batch(self, browser, company_batch):
         """Scrape a batch of companies using Playwright with parallel tabs"""
