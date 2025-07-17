@@ -65,10 +65,12 @@ class OllamaClient:
             return "news article"
             
         prompt = (
-            f"Classify this article title into exactly one category: 'feature update', 'funding', or 'news article'. "
-            f"Respond with only the category name, nothing else.\n\n"
+            f"You are a news classifier. Classify this article title into exactly one of these three categories:\n"
+            f"- 'feature update': for new features, product releases, updates, launches\n"
+            f"- 'funding': for funding rounds, investments, fundraising, venture capital\n"
+            f"- 'news article': for general news, partnerships, research, analysis\n\n"
             f"Title: \"{title}\"\n"
-            f"Category:"
+            f"Category (respond with only the category name):"
         )
         data = {
             "model": self.model,
@@ -88,15 +90,35 @@ class OllamaClient:
             response.raise_for_status()
             result = response.json()
             # The response is expected to have a 'response' field with the model's answer
-            answer = result.get("response", "").strip().lower()
+            answer = result.get("response", "").strip()
             
-            # More robust answer parsing
-            if any(word in answer for word in ["feature", "update", "release", "launch", "new"]):
+            # Debug: log some responses to see what the model is returning
+            if len(answer) < 50:  # Only log short responses to avoid spam
+                logger.debug(f"Model response for '{title[:50]}...': '{answer}'")
+            
+            # More robust answer parsing - be more specific
+            answer_lower = answer.lower().strip()
+            
+            # Check for exact matches first
+            if answer_lower in ["feature update", "feature", "update"]:
                 return "feature update"
-            elif any(word in answer for word in ["funding", "fundraise", "fund raise", "investment", "raise", "funded"]):
+            elif answer_lower in ["funding", "fund"]:
                 return "funding"
-            else:
+            elif answer_lower in ["news article", "news", "article"]:
                 return "news article"
+            
+            # Check for funding-related keywords (most specific)
+            funding_keywords = ["funding", "fundraise", "fund raise", "investment", "raise", "funded", "series", "round", "venture", "capital"]
+            if any(keyword in answer_lower for keyword in funding_keywords):
+                return "funding"
+            
+            # Check for feature update keywords (more specific)
+            feature_keywords = ["feature", "update", "release", "launch", "new feature", "announces", "introduces"]
+            if any(keyword in answer_lower for keyword in feature_keywords):
+                return "feature update"
+            
+            # Default to news article
+            return "news article"
         except Exception as e:
             logger.warning(f"Ollama classification failed for title '{title}': {e}")
             return "news article"
