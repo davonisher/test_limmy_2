@@ -232,13 +232,16 @@ class GPUAcceleratedScraper:
                 # Fallback to older API
                 unique_hashes, unique_indices = torch.unique(title_hashes, return_index=True)
             
-            df = df.iloc[unique_indices.cpu().numpy()]
+            # Remove duplicates from DataFrame
+            df = df.iloc[unique_indices.cpu().numpy()].reset_index(drop=True)
             
-            # GPU-accelerated sentiment analysis (simplified)
+            # Now apply sentiment analysis to the deduplicated data
+            titles_dedup = df['title'].fillna('').astype(str).values
+            title_lower = [t.lower() for t in titles_dedup]
+            
             positive_words = ['ai', 'breakthrough', 'innovation', 'success', 'launch', 'release', 'update']
             negative_words = ['bug', 'issue', 'problem', 'failure', 'down', 'error']
             
-            title_lower = [t.lower() for t in titles]
             positive_count = torch.tensor([sum(1 for word in positive_words if word in title) for title in title_lower], device=self.device)
             negative_count = torch.tensor([sum(1 for word in negative_words if word in title) for title in title_lower], device=self.device)
             
