@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # Load companies from CSV file
-TOOLS_CSV_PATH = '/top_1000_tools.csv'
+TOOLS_CSV_PATH = 'top_1000_tools.csv'
 
 def load_companies_from_csv():
     """Load AI tool companies from CSV file"""
