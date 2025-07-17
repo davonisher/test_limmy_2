@@ -26,7 +26,7 @@ def load_companies_from_csv():
         if os.path.exists(TOOLS_CSV_PATH):
             df_tools = pd.read_csv(TOOLS_CSV_PATH)
             companies = df_tools['tool_name'].dropna().unique().tolist()
-            companies = companies[:100]  # Limit to first 100
+            companies = companies[:5]  # Limit to first 100
             logger.info(f"Loaded {len(companies)} companies from CSV")
             return companies, df_tools
         else:
