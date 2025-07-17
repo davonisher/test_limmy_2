@@ -12,7 +12,7 @@ class OllamaClient:
     Assumes Ollama is running locally on port 11434.
     """
     def __init__(self, model="qwen2.5-coder:latest"):
-        self.base_url = "http://localhost:11434"
+        self.base_url = "http://localhost:11435"
         self.model = model
 
     async def classify_title(self, title, client=None):
