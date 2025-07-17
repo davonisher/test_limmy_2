@@ -1,0 +1,304 @@
+import asyncio
+import aiohttp
+from playwright.async_api import async_playwright
+from bs4 import BeautifulSoup
+import csv
+import pandas as pd
+import numpy as np
+import torch
+from asyncio_throttle import Throttler
+import time
+from concurrent.futures import ThreadPoolExecutor
+import logging
+from datetime import datetime
+import os
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+# Load companies from CSV file
+TOOLS_CSV_PATH = '/top_1000_tools.csv'
+
+def load_companies_from_csv():
+    """Load AI tool companies from CSV file"""
+    try:
+        if os.path.exists(TOOLS_CSV_PATH):
+            df_tools = pd.read_csv(TOOLS_CSV_PATH)
+            companies = df_tools['tool_name'].dropna().unique().tolist()
+            companies = companies[:100]  # Limit to first 100
+            logger.info(f"Loaded {len(companies)} companies from CSV")
+            return companies, df_tools
+        else:
+            logger.warning(f"CSV file not found: {TOOLS_CSV_PATH}")
+            # Fallback to hardcoded list
+            return [
+                "OpenAI", "Google DeepMind", "Anthropic", "Microsoft", "NVIDIA",
+                "Meta AI", "Cohere", "Hugging Face", "Stability AI", "Databricks"
+            ], None
+    except Exception as e:
+        logger.error(f"Error loading CSV: {e}")
+        return ["OpenAI", "Google DeepMind", "Anthropic"], None
+
+def chunked(lst, n):
+    """Yield successive n-sized chunks from lst."""
+    for i in range(0, len(lst), n):
+        yield lst[i:i + n]
+
+class GPUAcceleratedScraper:
+    def __init__(self, max_concurrent=20, gpu_batch_size=1000):
+        self.max_concurrent = max_concurrent
+        self.gpu_batch_size = gpu_batch_size
+        self.throttler = Throttler(rate_limit=10, period=1)  # 10 requests per second
+        self.all_data = []
+        
+        # Load companies and tool info
+        self.companies, self.df_tools = load_companies_from_csv()
+        if self.df_tools is not None:
+            self.tool_info = {row['tool_name']: (row['tool_id'], row['tool_url']) 
+                             for _, row in self.df_tools.iterrows()}
+        else:
+            self.tool_info = {}
+        
+        # Initialize GPU if available
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if torch.cuda.is_available():
+            logger.info(f"GPU detected: {torch.cuda.get_device_name(0)}")
+            logger.info(f"GPU count: {torch.cuda.device_count()}")
+        else:
+            logger.warning("GPU not available, using CPU.")
+    
+    async def scrape_company_batch(self, browser, company_batch):
+        """Scrape a batch of companies using Playwright with parallel tabs"""
+        batch_data = []
+        
+        # Open tabs in parallel
+        pages = [await browser.new_page() for _ in company_batch]
+        
+        try:
+            # Navigate all tabs to their respective Bing News search
+            tasks = []
+            for page, company in zip(pages, company_batch):
+                query = f'"{company}" AND (AI OR "AI tool")'
+                url = f'https://www.bing.com/news/search?q={query}&cc=us&setlang=en-us&qft=sortbydate%3d%221%22&form=YFNR'
+                tasks.append(page.goto(url))
+            await asyncio.gather(*tasks)
+            
+            # Scroll all tabs in parallel, 4 times max
+            for scroll_round in range(4):
+                scroll_tasks = []
+                for page in pages:
+                    scroll_tasks.append(page.evaluate('window.scrollTo(0, document.body.scrollHeight)'))
+                await asyncio.gather(*scroll_tasks)
+                await asyncio.gather(*[page.wait_for_timeout(2000) for page in pages])
+                logger.info(f"Completed scroll round {scroll_round + 1}/4 for batch")
+            
+            # Extract content for each tab
+            for page, company in zip(pages, company_batch):
+                tool_id, tool_url = self.tool_info.get(company, (None, None))
+                content = await page.content()
+                articles = self.parse_articles_advanced(content, company, tool_id, tool_url)
+                batch_data.extend(articles)
+                logger.info(f"Extracted {len(articles)} articles for {company}")
+                
+        finally:
+            # Close all pages
+            await asyncio.gather(*[page.close() for page in pages])
+        
+        return batch_data
+    
+    def parse_articles_advanced(self, content, company, tool_id, tool_url):
+        """Parse articles from HTML content with advanced selectors"""
+        soup = BeautifulSoup(content, 'html.parser')
+        articles = []
+        
+        # Multiple possible selectors for Bing News
+        selectors = [
+            'div.news-card-body',
+            'div.t_s',
+            'div.news-card',
+            'article.news-card',
+            'div[data-testid="news-card"]'
+        ]
+        
+        article_elements = []
+        for selector in selectors:
+            elements = soup.select(selector)
+            if elements:
+                article_elements = elements
+                break
+        
+        for article in article_elements:
+            try:
+                # Extract title and link
+                title_tag = (
+                    article.select_one('a.title') or 
+                    article.select_one('a[href*="news"]') or 
+                    article.select_one('a')
+                )
+                
+                link = title_tag['href'] if title_tag and title_tag.has_attr('href') else 'No Link'
+                title = title_tag.text.strip() if title_tag else 'No Title'
+                
+                # Clean and validate title
+                if not title or title == 'No Title' or len(title) < 5:
+                    continue
+                
+                # Extract image
+                image_tag = article.select_one('img')
+                image_url = image_tag['src'] if image_tag and image_tag.has_attr('src') else 'No Image'
+                
+                # Extract source
+                source_selectors = [
+                    'div.source',
+                    'div.source-card',
+                    'span.source',
+                    'div[data-testid="source"]'
+                ]
+                source = 'No Source'
+                for selector in source_selectors:
+                    source_tag = article.select_one(selector)
+                    if source_tag:
+                        source = source_tag.text.strip()
+                        break
+                
+                # Extract snippet
+                snippet_selectors = [
+                    'div.snippet',
+                    'div.snippet-card',
+                    'p.snippet',
+                    'div[data-testid="snippet"]'
+                ]
+                snippet = 'No Snippet'
+                for selector in snippet_selectors:
+                    snippet_tag = article.select_one(selector)
+                    if snippet_tag:
+                        snippet = snippet_tag.text.strip()
+                        break
+                
+                articles.append({
+                    'tool_id': tool_id,
+                    'company': company,
+                    'tool_url': tool_url,
+                    'title': title,
+                    'link': link,
+                    'image_url': image_url,
+                    'source': source,
+                    'snippet': snippet
+                })
+                
+            except Exception as e:
+                logger.debug(f"Error parsing article: {e}")
+                continue
+        
+        return articles
+    
+    def process_data_gpu(self, data):
+        """Process scraped data using GPU acceleration (PyTorch)"""
+        if not data:
+            return data
+        try:
+            df = pd.DataFrame(data)
+            if len(df) == 0:
+                return data
+            
+            # Move string lengths to GPU for batch processing
+            titles = df['title'].fillna('').astype(str).values
+            snippets = df['snippet'].fillna('').astype(str).values
+            
+            # Convert to list of lengths
+            title_lengths = torch.tensor([len(t) for t in titles], device=self.device)
+            snippet_lengths = torch.tensor([len(s) for s in snippets], device=self.device)
+            
+            # Add processed features back to DataFrame
+            df['title_length'] = title_lengths.cpu().numpy()
+            df['snippet_length'] = snippet_lengths.cpu().numpy()
+            df['has_image'] = df['image_url'] != 'No Image'
+            
+            # GPU-accelerated duplicate detection (hashing on GPU)
+            title_hashes = torch.tensor([hash(t) for t in titles], device=self.device)
+            _, unique_indices = torch.unique(title_hashes, return_inverse=False, return_counts=False, sorted=False, return_index=True)
+            df = df.iloc[unique_indices.cpu().numpy()]
+            
+            # GPU-accelerated sentiment analysis (simplified)
+            positive_words = ['ai', 'breakthrough', 'innovation', 'success', 'launch', 'release', 'update']
+            negative_words = ['bug', 'issue', 'problem', 'failure', 'down', 'error']
+            
+            title_lower = [t.lower() for t in titles]
+            positive_count = torch.tensor([sum(1 for word in positive_words if word in title) for title in title_lower], device=self.device)
+            negative_count = torch.tensor([sum(1 for word in negative_words if word in title) for title in title_lower], device=self.device)
+            
+            df['positive_words'] = positive_count.cpu().numpy()
+            df['negative_words'] = negative_count.cpu().numpy()
+            df['sentiment_score'] = (positive_count - negative_count).cpu().numpy()
+            
+            logger.info(f"GPU processed {len(df)} articles (PyTorch)")
+            return df.to_dict('records')
+            
+        except Exception as e:
+            logger.error(f"GPU processing error: {e}")
+        return data
+    
+    async def scrape_all_companies(self):
+        """Scrape all companies using batch processing with Playwright"""
+        start_time = time.time()
+        
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            
+            try:
+                # Process companies in batches
+                for i, company_batch in enumerate(chunked(self.companies, 20)):
+                    logger.info(f"Processing batch {i+1}/{(len(self.companies)-1)//20+1} with {len(company_batch)} companies")
+                    
+                    batch_data = await self.scrape_company_batch(browser, company_batch)
+                    self.all_data.extend(batch_data)
+                    
+                    # Add delay between batches to avoid rate limiting
+                    if i < (len(self.companies)-1)//20:
+                        await asyncio.sleep(5)
+                
+            finally:
+                await browser.close()
+        
+        # Process data with GPU acceleration
+        logger.info(f"Processing {len(self.all_data)} articles with GPU acceleration (PyTorch)...")
+        processed_data = self.process_data_gpu(self.all_data)
+        
+        # Save to CSV with timestamp
+        self.save_to_csv(processed_data)
+        
+        end_time = time.time()
+        logger.info(f"Scraping completed in {end_time - start_time:.2f} seconds")
+        logger.info(f"Total articles scraped: {len(processed_data)}")
+        
+        return processed_data
+    
+    def save_to_csv(self, data):
+        """Save data to CSV file with timestamp"""
+        if not data:
+            logger.warning("No data to save")
+            return
+        
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        filename = f'bing_news_articles_gpu_{today_str}.csv'
+        
+        with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
+            fieldnames = [
+                'tool_id', 'company', 'tool_url', 'title', 'link', 'image_url', 
+                'source', 'snippet', 'title_length', 'snippet_length', 'has_image',
+                'positive_words', 'negative_words', 'sentiment_score'
+            ]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in data:
+                writer.writerow(row)
+        
+        logger.info(f"Data saved to {filename}")
+
+async def main():
+    scraper = GPUAcceleratedScraper(max_concurrent=20, gpu_batch_size=1000)
+    await scraper.scrape_all_companies()
+
+if __name__ == "__main__":
+    asyncio.run(main())
