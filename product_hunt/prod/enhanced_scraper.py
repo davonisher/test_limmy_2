@@ -267,7 +267,7 @@ async def main():
     """Main function to run the scraper."""
     # Define input and output file paths
     csv_file_path = TOOLS_CSV_PATH  # Use the CSV path defined at the top
-    output_file_path = "product_hunt/scraped_results4.csv"
+    output_file_path = "scraped_results4.csv"
     
     print("Starting Product Hunt scraper (server optimized)...")
     print(f"Input CSV: {csv_file_path}")
