@@ -30,11 +30,12 @@ async def main():
         # Test Ollama connection first
         logger.info(f"Testing Ollama connection with model: {scraper.ollama.model}")
         test_title = "OpenAI launches new GPT-5 model"
-        test_category = await scraper.ollama.classify_title(test_title)
-        logger.info(f"Ollama test successful: '{test_title}' -> {test_category}")
+        test_tool_name = "OpenAI"
+        test_category = await scraper.ollama.classify_title(test_title, test_tool_name)
+        logger.info(f"Ollama test successful: '{test_title}' -> {test_category.category} (relevant: {test_category.company_relevance})")
         
         # Run the full scraper
-        results = await scraper.scrape_all_companies()
+        results = await scraper.scrape_all_tools()
         
         logger.info(f"Scraping completed successfully! Total articles: {len(results)}")
         
