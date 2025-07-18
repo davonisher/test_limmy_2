@@ -62,7 +62,13 @@ IMPORTANT RULES:
 - If someone has multiple affiliations, list them all
 - Primary affiliation is usually the first one mentioned or the most prominent
 
-Return as JSON with the specified structure."""
+Return ONLY a valid JSON object with this exact structure:
+{{
+  "companies": ["company1", "company2"],
+  "universities": ["university1", "university2"],
+  "primary_affiliation": "main affiliation",
+  "reasoning": "explanation"
+}}"""
 
         data = {
             "model": self.model,
@@ -73,7 +79,6 @@ Return as JSON with the specified structure."""
                 }
             ],
             "stream": False,
-            "format": AffiliationExtraction.model_json_schema(),
             "options": {
                 "temperature": 0.1,  # Low temperature for more consistent extraction
                 "top_p": 0.9
@@ -92,8 +97,42 @@ Return as JSON with the specified structure."""
             # Parse the structured response
             content = result.get("message", {}).get("content", "")
             if content:
-                extraction = AffiliationExtraction.model_validate_json(content)
-                return extraction
+                # Try to extract JSON from the response
+                try:
+                    # First try direct parsing
+                    extraction = AffiliationExtraction.model_validate_json(content)
+                    return extraction
+                except Exception as json_error:
+                    # Try to extract JSON from the text if it's wrapped in markdown
+                    import re
+                    import json
+                    
+                    # Look for JSON code blocks
+                    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+                    if json_match:
+                        try:
+                            json_str = json_match.group(1)
+                            extraction = AffiliationExtraction.model_validate_json(json_str)
+                            return extraction
+                        except Exception:
+                            pass
+                    
+                    # Try to find JSON object in the text
+                    json_match = re.search(r'\{[^{}]*"companies"[^{}]*"universities"[^{}]*\}', content, re.DOTALL)
+                    if json_match:
+                        try:
+                            json_str = json_match.group(0)
+                            extraction = AffiliationExtraction.model_validate_json(json_str)
+                            return extraction
+                        except Exception:
+                            pass
+                    
+                    # Log the actual response for debugging
+                    logger.debug(f"Failed to parse JSON for {name}. Response: {content[:200]}...")
+                    logger.debug(f"JSON parsing error: {json_error}")
+                    
+                    # Try manual extraction as last resort
+                    return self._manual_extraction(name, affiliation, content)
             else:
                 raise ValueError("No content in response")
                 
@@ -102,49 +141,238 @@ Return as JSON with the specified structure."""
             # Fallback to basic extraction
             return self._fallback_extraction(name, affiliation)
 
+    def _manual_extraction(self, name, affiliation, content):
+        """Manual extraction when JSON parsing fails but we have content"""
+        try:
+            # Try to extract information from the content using regex
+            import re
+            
+            companies = []
+            universities = []
+            primary_affiliation = affiliation
+            reasoning = "Manual extraction from failed JSON response"
+            
+            # Look for company mentions
+            company_patterns = [
+                r'companies?["\s]*:["\s]*\[([^\]]*)\]',
+                r'COMPANIES?["\s]*:["\s]*\[([^\]]*)\]',
+                r'company["\s]*:["\s]*\[([^\]]*)\]'
+            ]
+            
+            for pattern in company_patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    companies_str = match.group(1)
+                    # Extract quoted strings
+                    company_matches = re.findall(r'"([^"]*)"', companies_str)
+                    companies.extend(company_matches)
+                    break
+            
+            # Look for university mentions
+            university_patterns = [
+                r'universities?["\s]*:["\s]*\[([^\]]*)\]',
+                r'UNIVERSITIES?["\s]*:["\s]*\[([^\]]*)\]',
+                r'university["\s]*:["\s]*\[([^\]]*)\]'
+            ]
+            
+            for pattern in university_patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    universities_str = match.group(1)
+                    # Extract quoted strings
+                    university_matches = re.findall(r'"([^"]*)"', universities_str)
+                    universities.extend(university_matches)
+                    break
+            
+            # Look for primary affiliation
+            primary_patterns = [
+                r'primary["\s]*:["\s]*"([^"]*)"',
+                r'PRIMARY["\s]*:["\s]*"([^"]*)"'
+            ]
+            
+            for pattern in primary_patterns:
+                match = re.search(pattern, content, re.IGNORECASE)
+                if match:
+                    primary_affiliation = match.group(1)
+                    break
+            
+            return AffiliationExtraction(
+                companies=list(set(companies)),
+                universities=list(set(universities)),
+                primary_affiliation=primary_affiliation,
+                reasoning=reasoning
+            )
+            
+        except Exception as e:
+            logger.debug(f"Manual extraction also failed for {name}: {e}")
+            return self._fallback_extraction(name, affiliation)
+
     def _fallback_extraction(self, name, affiliation):
         """Fallback extraction when Ollama fails"""
         affiliation_lower = affiliation.lower()
         
-        # Common company keywords
-        company_keywords = [
-            'google', 'microsoft', 'openai', 'deepmind', 'meta', 'facebook', 'apple', 'amazon',
-            'nvidia', 'intel', 'ibm', 'anthropic', 'cohere', 'hugging face', 'stability ai',
-            'waymo', 'tesla', 'uber', 'lyft', 'airbnb', 'netflix', 'spotify', 'twitter',
-            'linkedin', 'salesforce', 'oracle', 'adobe', 'autodesk', 'cisco', 'dell',
-            'research', 'lab', 'labs', 'inc', 'corp', 'llc', 'startup', 'foundation'
-        ]
+        # Common company keywords with their full names
+        company_mappings = {
+            'google': 'Google',
+            'microsoft': 'Microsoft', 
+            'openai': 'OpenAI',
+            'deepmind': 'DeepMind',
+            'meta': 'Meta',
+            'facebook': 'Facebook',
+            'apple': 'Apple',
+            'amazon': 'Amazon',
+            'nvidia': 'NVIDIA',
+            'intel': 'Intel',
+            'ibm': 'IBM',
+            'anthropic': 'Anthropic',
+            'cohere': 'Cohere',
+            'hugging face': 'Hugging Face',
+            'stability ai': 'Stability AI',
+            'waymo': 'Waymo',
+            'tesla': 'Tesla',
+            'uber': 'Uber',
+            'lyft': 'Lyft',
+            'airbnb': 'Airbnb',
+            'netflix': 'Netflix',
+            'spotify': 'Spotify',
+            'twitter': 'Twitter',
+            'linkedin': 'LinkedIn',
+            'salesforce': 'Salesforce',
+            'oracle': 'Oracle',
+            'adobe': 'Adobe',
+            'autodesk': 'Autodesk',
+            'cisco': 'Cisco',
+            'dell': 'Dell',
+            'safe superintelligence': 'Safe Superintelligence Inc',
+            'covariant': 'Covariant',
+            'vercept': 'Vercept',
+            'research': 'Research',
+            'lab': 'Lab',
+            'labs': 'Labs',
+            'inc': 'Inc',
+            'corp': 'Corp',
+            'llc': 'LLC',
+            'startup': 'Startup',
+            'foundation': 'Foundation'
+        }
         
-        # Common university keywords
-        university_keywords = [
-            'university', 'college', 'institute', 'school', 'academy', 'polytechnic',
-            'mit', 'stanford', 'berkeley', 'harvard', 'yale', 'princeton', 'columbia',
-            'cornell', 'penn', 'brown', 'dartmouth', 'duke', 'northwestern', 'chicago',
-            'caltech', 'cmu', 'gatech', 'georgia tech', 'ucla', 'ucsd', 'ucsb', 'ucdavis',
-            'uc irvine', 'uc riverside', 'uc merced', 'uc santa cruz', 'uc santa barbara',
-            'oxford', 'cambridge', 'imperial', 'ucl', 'kcl', 'lse', 'warwick', 'bristol',
-            'manchester', 'edinburgh', 'glasgow', 'birmingham', 'leeds', 'sheffield',
-            'toronto', 'waterloo', 'mcgill', 'ubc', 'montreal', 'alberta', 'calgary'
-        ]
+        # Common university keywords with their full names
+        university_mappings = {
+            'university': 'University',
+            'college': 'College',
+            'institute': 'Institute',
+            'school': 'School',
+            'academy': 'Academy',
+            'polytechnic': 'Polytechnic',
+            'mit': 'MIT',
+            'stanford': 'Stanford University',
+            'berkeley': 'University of California, Berkeley',
+            'uc berkeley': 'University of California, Berkeley',
+            'harvard': 'Harvard University',
+            'yale': 'Yale University',
+            'princeton': 'Princeton University',
+            'columbia': 'Columbia University',
+            'cornell': 'Cornell University',
+            'penn': 'University of Pennsylvania',
+            'brown': 'Brown University',
+            'dartmouth': 'Dartmouth College',
+            'duke': 'Duke University',
+            'northwestern': 'Northwestern University',
+            'chicago': 'University of Chicago',
+            'caltech': 'Caltech',
+            'cmu': 'Carnegie Mellon University',
+            'gatech': 'Georgia Institute of Technology',
+            'georgia tech': 'Georgia Institute of Technology',
+            'ucla': 'University of California, Los Angeles',
+            'ucsd': 'University of California, San Diego',
+            'ucsb': 'University of California, Santa Barbara',
+            'ucdavis': 'University of California, Davis',
+            'uc irvine': 'University of California, Irvine',
+            'uc riverside': 'University of California, Riverside',
+            'uc merced': 'University of California, Merced',
+            'uc santa cruz': 'University of California, Santa Cruz',
+            'uc santa barbara': 'University of California, Santa Barbara',
+            'oxford': 'University of Oxford',
+            'cambridge': 'University of Cambridge',
+            'imperial': 'Imperial College London',
+            'ucl': 'University College London',
+            'kcl': 'King\'s College London',
+            'lse': 'London School of Economics',
+            'warwick': 'University of Warwick',
+            'bristol': 'University of Bristol',
+            'manchester': 'University of Manchester',
+            'edinburgh': 'University of Edinburgh',
+            'glasgow': 'University of Glasgow',
+            'birmingham': 'University of Birmingham',
+            'leeds': 'University of Leeds',
+            'sheffield': 'University of Sheffield',
+            'toronto': 'University of Toronto',
+            'waterloo': 'University of Waterloo',
+            'mcgill': 'McGill University',
+            'ubc': 'University of British Columbia',
+            'montreal': 'University of Montreal',
+            'alberta': 'University of Alberta',
+            'calgary': 'University of Calgary',
+            'freiburg': 'University of Freiburg',
+            'courant': 'Courant Institute',
+            'new york university': 'New York University',
+            'nyu': 'New York University'
+        }
         
         companies = []
         universities = []
         
-        # Simple keyword matching
-        for keyword in company_keywords:
+        # Extract companies using keyword matching
+        for keyword, full_name in company_mappings.items():
             if keyword in affiliation_lower:
-                # Extract the actual company name (this is simplified)
-                companies.append(keyword.title())
+                companies.append(full_name)
         
-        for keyword in university_keywords:
+        # Extract universities using keyword matching
+        for keyword, full_name in university_mappings.items():
             if keyword in affiliation_lower:
-                # Extract the actual university name (this is simplified)
-                universities.append(keyword.title())
+                universities.append(full_name)
+        
+        # Try to extract more specific patterns
+        import re
+        
+        # Look for patterns like "Professor at X" or "VP at Y"
+        professor_patterns = [
+            r'professor\s+(?:of\s+)?[^,]*\s+(?:at\s+)?([^,\n]+)',
+            r'prof\s+(?:of\s+)?[^,]*\s+(?:at\s+)?([^,\n]+)',
+            r'vp\s+(?:of\s+)?[^,]*\s+(?:at\s+)?([^,\n]+)',
+            r'head\s+(?:of\s+)?[^,]*\s+(?:at\s+)?([^,\n]+)',
+            r'co-founder\s+(?:of\s+)?[^,]*\s+(?:at\s+)?([^,\n]+)',
+            r'chief\s+[^,]*\s+(?:at\s+)?([^,\n]+)'
+        ]
+        
+        for pattern in professor_patterns:
+            matches = re.findall(pattern, affiliation, re.IGNORECASE)
+            for match in matches:
+                match = match.strip()
+                if match and len(match) > 2:  # Avoid very short matches
+                    # Check if it looks like a university
+                    if any(uni_keyword in match.lower() for uni_keyword in ['university', 'college', 'institute', 'school']):
+                        if match not in universities:
+                            universities.append(match)
+                    # Check if it looks like a company
+                    elif any(comp_keyword in match.lower() for comp_keyword in ['inc', 'corp', 'llc', 'labs', 'research']):
+                        if match not in companies:
+                            companies.append(match)
+        
+        # Determine primary affiliation
+        primary_affiliation = affiliation
+        if companies and universities:
+            # If both present, use the first one mentioned
+            primary_affiliation = companies[0] if affiliation_lower.find(companies[0].lower()) < affiliation_lower.find(universities[0].lower()) else universities[0]
+        elif companies:
+            primary_affiliation = companies[0]
+        elif universities:
+            primary_affiliation = universities[0]
         
         return AffiliationExtraction(
             companies=list(set(companies)),
             universities=list(set(universities)),
-            primary_affiliation=affiliation,
+            primary_affiliation=primary_affiliation,
             reasoning="Fallback keyword matching"
         )
 
