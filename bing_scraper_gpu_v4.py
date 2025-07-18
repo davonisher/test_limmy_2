@@ -34,10 +34,10 @@ def load_companies_from_csv():
     try:
         if os.path.exists(TOOLS_CSV_PATH):
             df_tools = pd.read_csv(TOOLS_CSV_PATH)
-            companies = df_tools['tool_name'].dropna().unique().tolist()
-            companies = companies[:100]  # Limit to first 100
-            logger.info(f"Loaded {len(companies)} companies from CSV")
-            return companies, df_tools
+            tool_names = df_tools['tool_name'].dropna().unique().tolist()
+            tool_names = tool_names[:100]  # Limit to first 100
+            logger.info(f"Loaded {len(tool_names)} tool names from CSV")
+            return tool_names, df_tools
         else:
             logger.warning(f"CSV file not found: {TOOLS_CSV_PATH}")
             # Fallback to hardcoded list
@@ -63,7 +63,7 @@ class OllamaClient:
         self.base_url = "http://localhost:11434"
         self.model = model
 
-    async def classify_title(self, title, company, client=None):
+    async def classify_title(self, title, tool_name, client=None):
         """
         Classify the article title using structured outputs.
         Returns an ArticleClassification object.
@@ -80,21 +80,21 @@ class OllamaClient:
         prompt = f"""You are an expert news classifier. Analyze this article title and determine:
 
 1. CATEGORY: Classify into exactly one category:
-   - "feature update": ONLY if the article is about the company's new features, product releases, updates, launches, or announcements
-   - "funding": ONLY if the article is about the company's funding rounds, investments, fundraising, venture capital, or financial news
-   - "news article": for general news, partnerships, research, analysis, or other company-related news
-   - "irrelevant": if the article is NOT about the company at all
+   - "feature update": ONLY if the article is about the tool's new features, product releases, updates, launches, or announcements
+   - "funding": ONLY if the article is about the tool's funding rounds, investments, fundraising, venture capital, or financial news
+   - "news article": for general news, partnerships, research, analysis, or other tool-related news
+   - "irrelevant": if the article is NOT about the tool at all
 
-2. COMPANY RELEVANCE: Determine if the article is actually about the company being searched for.
+2. COMPANY RELEVANCE: Determine if the article is actually about the tool being searched for.
 
-COMPANY BEING SEARCHED: {company}
+TOOL BEING SEARCHED: {tool_name}
 ARTICLE TITLE: "{title}"
 
 IMPORTANT RULES:
-- Only classify as "feature update" or "funding" if the article is DIRECTLY about {company}
-- If the article mentions {company} but is not about their features/funding, use "news article"
-- If the article doesn't mention {company} at all, use "irrelevant"
-- Be very strict about company relevance
+- Only classify as "feature update" or "funding" if the article is DIRECTLY about {tool_name}
+- If the article mentions {tool_name} but is not about their features/funding, use "news article"
+- If the article doesn't mention {tool_name} at all, use "irrelevant"
+- Be very strict about tool relevance
 
 Return as JSON with the specified structure."""
 
@@ -134,15 +134,15 @@ Return as JSON with the specified structure."""
         except Exception as e:
             logger.warning(f"Ollama classification failed for title '{title}': {e}")
             # Fallback to basic classification
-            company_lower = company.lower()
+            tool_name_lower = tool_name.lower()
             title_lower = title.lower()
-            company_relevance = company_lower in title_lower
+            company_relevance = tool_name_lower in title_lower
             
             if not company_relevance:
                 return ArticleClassification(
                     category="irrelevant",
                     company_relevance=False,
-                    reasoning="Company name not found in title"
+                    reasoning="Tool name not found in title"
                 )
             elif any(word in title_lower for word in ["funding", "fund", "investment", "raise", "series", "round"]):
                 return ArticleClassification(
@@ -160,7 +160,7 @@ Return as JSON with the specified structure."""
                 return ArticleClassification(
                     category="news article",
                     company_relevance=True,
-                    reasoning="General company news"
+                    reasoning="General tool news"
                 )
 
 class GPUAcceleratedScraper:
@@ -170,8 +170,8 @@ class GPUAcceleratedScraper:
         self.throttler = Throttler(rate_limit=10, period=1)  # 10 requests per second
         self.all_data = []
         
-        # Load companies and tool info
-        self.companies, self.df_tools = load_companies_from_csv()
+        # Load tool names and tool info
+        self.tool_names, self.df_tools = load_companies_from_csv()
         if self.df_tools is not None:
             self.tool_info = {row['tool_name']: (row['tool_id'], row['tool_url']) 
                              for _, row in self.df_tools.iterrows()}
@@ -189,19 +189,19 @@ class GPUAcceleratedScraper:
         # Initialize Ollama client
         self.ollama = OllamaClient(model="llama3.3:latest")
     
-    async def scrape_company_batch(self, browser, company_batch):
-        """Scrape a batch of companies using Playwright with parallel tabs"""
+    async def scrape_tool_batch(self, browser, tool_batch):
+        """Scrape a batch of tools using Playwright with parallel tabs"""
         batch_data = []
         
         # Open tabs in parallel
-        pages = [await browser.new_page() for _ in company_batch]
+        pages = [await browser.new_page() for _ in tool_batch]
         
         try:
             # Navigate all tabs to their respective Bing News search
             tasks = []
-            for page, company in zip(pages, company_batch):
+            for page, tool_name in zip(pages, tool_batch):
                 # More specific search query to reduce irrelevant results
-                query = f'"{company}" AND (AI OR "artificial intelligence" OR "machine learning" OR "AI tool" OR "software" OR "technology")'
+                query = f'"{tool_name}" AND (AI OR "artificial intelligence" OR "machine learning" OR "AI tool" OR "software" OR "technology")'
                 url = f'https://www.bing.com/news/search?q={query}&cc=us&setlang=en-us&qft=sortbydate%3d%221%22&form=YFNR'
                 tasks.append(page.goto(url))
             await asyncio.gather(*tasks)
@@ -216,12 +216,12 @@ class GPUAcceleratedScraper:
                 logger.info(f"Completed scroll round {scroll_round + 1}/4 for batch")
             
             # Extract content for each tab
-            for page, company in zip(pages, company_batch):
-                tool_id, tool_url = self.tool_info.get(company, (None, None))
+            for page, tool_name in zip(pages, tool_batch):
+                tool_id, tool_url = self.tool_info.get(tool_name, (None, None))
                 content = await page.content()
-                articles = self.parse_articles_advanced(content, company, tool_id, tool_url)
+                articles = self.parse_articles_advanced(content, tool_name, tool_id, tool_url)
                 batch_data.extend(articles)
-                logger.info(f"Extracted {len(articles)} articles for {company}")
+                logger.info(f"Extracted {len(articles)} articles for {tool_name}")
                 
         finally:
             # Close all pages
@@ -229,7 +229,7 @@ class GPUAcceleratedScraper:
         
         return batch_data
     
-    def parse_articles_advanced(self, content, company, tool_id, tool_url):
+    def parse_articles_advanced(self, content, tool_name, tool_id, tool_url):
         """Parse articles from HTML content with advanced selectors"""
         soup = BeautifulSoup(content, 'html.parser')
         articles = []
@@ -300,7 +300,7 @@ class GPUAcceleratedScraper:
                 
                 articles.append({
                     'tool_id': tool_id,
-                    'company': company,
+                    'tool_name': tool_name,
                     'tool_url': tool_url,
                     'title': title,
                     'link': link,
@@ -326,18 +326,18 @@ class GPUAcceleratedScraper:
         # Create a copy for filtering
         filtered_df = df.copy()
         
-        # Remove articles where company name is not in title (case insensitive)
-        company_in_title = []
+        # Remove articles where tool name is not in title (case insensitive)
+        tool_name_in_title = []
         for _, row in filtered_df.iterrows():
-            company = str(row['company']).lower()
+            tool_name = str(row['tool_name']).lower()
             title = str(row['title']).lower()
-            company_in_title.append(company in title)
+            tool_name_in_title.append(tool_name in title)
         
-        filtered_df['company_in_title'] = company_in_title
-        pre_filtered_df = filtered_df[filtered_df['company_in_title'] == True].copy()
+        filtered_df['tool_name_in_title'] = tool_name_in_title
+        pre_filtered_df = filtered_df[filtered_df['tool_name_in_title'] == True].copy()
         
         pre_filtered_count = len(df) - len(pre_filtered_df)
-        logger.info(f"Pre-filtered out {pre_filtered_count} articles where company name not in title")
+        logger.info(f"Pre-filtered out {pre_filtered_count} articles where tool name not in title")
         logger.info(f"Remaining articles for LLM classification: {len(pre_filtered_df)}")
         
         if len(pre_filtered_df) == 0:
@@ -347,7 +347,7 @@ class GPUAcceleratedScraper:
             return df
         
         titles = pre_filtered_df['title'].fillna('').astype(str).tolist()
-        companies = pre_filtered_df['company'].fillna('').astype(str).tolist()
+        tool_names = pre_filtered_df['tool_name'].fillna('').astype(str).tolist()
         categories = []
         relevances = []
         
@@ -359,11 +359,11 @@ class GPUAcceleratedScraper:
             batch_size = 50
             for i in range(0, len(titles), batch_size):
                 batch_titles = titles[i:i+batch_size]
-                batch_companies = companies[i:i+batch_size]
+                batch_tool_names = tool_names[i:i+batch_size]
                 logger.info(f"Classifying batch {i//batch_size + 1}/{(len(titles)-1)//batch_size + 1} ({len(batch_titles)} titles)")
                 
-                tasks = [self.ollama.classify_title(title, company, client=client) 
-                        for title, company in zip(batch_titles, batch_companies)]
+                tasks = [self.ollama.classify_title(title, tool_name, client=client) 
+                        for title, tool_name in zip(batch_titles, batch_tool_names)]
                 batch_results = await asyncio.gather(*tasks, return_exceptions=True)
                 
                 # Handle any exceptions in the batch
@@ -389,7 +389,7 @@ class GPUAcceleratedScraper:
         
         logger.info(f"Completed Ollama classification.")
         logger.info(f"Categories: {dict(pd.Series(categories).value_counts())}")
-        logger.info(f"Company relevance: {sum(relevances)}/{len(relevances)} articles relevant")
+        logger.info(f"Tool relevance: {sum(relevances)}/{len(relevances)} articles relevant")
         logger.info(f"Filtered out {irrelevant_count} irrelevant articles")
         
         return relevant_df
@@ -468,23 +468,23 @@ class GPUAcceleratedScraper:
             df['has_image'] = df['image_url'] != 'No Image'
             return df
 
-    async def scrape_all_companies(self):
-        """Scrape all companies using batch processing with Playwright"""
+    async def scrape_all_tools(self):
+        """Scrape all tools using batch processing with Playwright"""
         start_time = time.time()
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             
             try:
-                # Process companies in batches
-                for i, company_batch in enumerate(chunked(self.companies, 20)):
-                    logger.info(f"Processing batch {i+1}/{(len(self.companies)-1)//20+1} with {len(company_batch)} companies")
+                # Process tools in batches
+                for i, tool_batch in enumerate(chunked(self.tool_names, 20)):
+                    logger.info(f"Processing batch {i+1}/{(len(self.tool_names)-1)//20+1} with {len(tool_batch)} tools")
                     
-                    batch_data = await self.scrape_company_batch(browser, company_batch)
+                    batch_data = await self.scrape_tool_batch(browser, tool_batch)
                     self.all_data.extend(batch_data)
                     
                     # Add delay between batches to avoid rate limiting
-                    if i < (len(self.companies)-1)//20:
+                    if i < (len(self.tool_names)-1)//20:
                         await asyncio.sleep(5)
                 
             finally:
@@ -519,7 +519,7 @@ class GPUAcceleratedScraper:
         
         with open(filename, 'w', newline='', encoding='utf-8') as csvfile:
             fieldnames = [
-                'tool_id', 'company', 'tool_url', 'title', 'link', 'image_url', 
+                'tool_id', 'tool_name', 'tool_url', 'title', 'link', 'image_url', 
                 'source', 'snippet', 'title_length', 'snippet_length', 'has_image',
                 'positive_words', 'negative_words', 'sentiment_score', 'ollama_category', 'company_relevance'
             ]
@@ -532,7 +532,7 @@ class GPUAcceleratedScraper:
 
 async def main():
     scraper = GPUAcceleratedScraper(max_concurrent=20, gpu_batch_size=1000)
-    await scraper.scrape_all_companies()
+    await scraper.scrape_all_tools()
 
 if __name__ == "__main__":
     asyncio.run(main())

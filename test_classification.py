@@ -24,7 +24,7 @@ class OllamaClient:
         self.base_url = "http://localhost:11434"
         self.model = model
 
-    async def classify_title(self, title, company, client=None):
+    async def classify_title(self, title, tool_name, client=None):
         """
         Classify the article title using structured outputs.
         Returns an ArticleClassification object.
@@ -41,21 +41,21 @@ class OllamaClient:
         prompt = f"""You are an expert news classifier. Analyze this article title and determine:
 
 1. CATEGORY: Classify into exactly one category:
-   - "feature update": ONLY if the article is about the company's new features, product releases, updates, launches, or announcements
-   - "funding": ONLY if the article is about the company's funding rounds, investments, fundraising, venture capital, or financial news
-   - "news article": for general news, partnerships, research, analysis, or other company-related news
-   - "irrelevant": if the article is NOT about the company at all
+   - "feature update": ONLY if the article is about the tool's new features, product releases, updates, launches, or announcements
+   - "funding": ONLY if the article is about the tool's funding rounds, investments, fundraising, venture capital, or financial news
+   - "news article": for general news, partnerships, research, analysis, or other tool-related news
+   - "irrelevant": if the article is NOT about the tool at all
 
-2. COMPANY RELEVANCE: Determine if the article is actually about the company being searched for.
+2. COMPANY RELEVANCE: Determine if the article is actually about the tool being searched for.
 
-COMPANY BEING SEARCHED: {company}
+TOOL BEING SEARCHED: {tool_name}
 ARTICLE TITLE: "{title}"
 
 IMPORTANT RULES:
-- Only classify as "feature update" or "funding" if the article is DIRECTLY about {company}
-- If the article mentions {company} but is not about their features/funding, use "news article"
-- If the article doesn't mention {company} at all, use "irrelevant"
-- Be very strict about company relevance
+- Only classify as "feature update" or "funding" if the article is DIRECTLY about {tool_name}
+- If the article mentions {tool_name} but is not about their features/funding, use "news article"
+- If the article doesn't mention {tool_name} at all, use "irrelevant"
+- Be very strict about tool relevance
 
 Return as JSON with the specified structure."""
 
@@ -95,15 +95,15 @@ Return as JSON with the specified structure."""
         except Exception as e:
             logger.warning(f"Ollama classification failed for title '{title}': {e}")
             # Fallback to basic classification
-            company_lower = company.lower()
+            tool_name_lower = tool_name.lower()
             title_lower = title.lower()
-            company_relevance = company_lower in title_lower
+            company_relevance = tool_name_lower in title_lower
             
             if not company_relevance:
                 return ArticleClassification(
                     category="irrelevant",
                     company_relevance=False,
-                    reasoning="Company name not found in title"
+                    reasoning="Tool name not found in title"
                 )
             elif any(word in title_lower for word in ["funding", "fund", "investment", "raise", "series", "round"]):
                 return ArticleClassification(
@@ -121,7 +121,7 @@ Return as JSON with the specified structure."""
                 return ArticleClassification(
                     category="news article",
                     company_relevance=True,
-                    reasoning="General company news"
+                    reasoning="General tool news"
                 )
 
 async def test_classification():
@@ -130,37 +130,37 @@ async def test_classification():
     # Test cases with expected results
     test_cases = [
         {
-            "company": "Tricentis",
+            "tool_name": "Tricentis",
             "title": "GTCR Makes $1.33 Billion Investment in Tricentis",
             "expected_category": "funding",
             "expected_relevance": True
         },
         {
-            "company": "Tricentis", 
+            "tool_name": "Tricentis", 
             "title": "Tricentis Launches qTest Copilot to Empower QA Organizations",
             "expected_category": "feature update",
             "expected_relevance": True
         },
         {
-            "company": "Intercom",
+            "tool_name": "Intercom",
             "title": "Top 7 business access control systems companies should consider",
             "expected_category": "irrelevant", 
             "expected_relevance": False
         },
         {
-            "company": "Pond5",
+            "tool_name": "Pond5",
             "title": "'Bird Box' Included Real Footage of a Quebec Tragedy That Killed 47 People",
             "expected_category": "irrelevant",
             "expected_relevance": False
         },
         {
-            "company": "Pitch",
+            "tool_name": "Pitch",
             "title": "Data Scientist Hilary Mason on AI and the Future of Fiction",
             "expected_category": "irrelevant",
             "expected_relevance": False
         },
         {
-            "company": "Sendbird",
+            "tool_name": "Sendbird",
             "title": "Feet Pics Average Income: Unveiling The Truth and Figures",
             "expected_category": "irrelevant",
             "expected_relevance": False
@@ -175,13 +175,13 @@ async def test_classification():
     async with httpx.AsyncClient(timeout=30) as client:
         for i, test_case in enumerate(test_cases, 1):
             print(f"\nTest {i}:")
-            print(f"Company: {test_case['company']}")
+            print(f"Tool: {test_case['tool_name']}")
             print(f"Title: {test_case['title']}")
             print(f"Expected: {test_case['expected_category']} (relevant: {test_case['expected_relevance']})")
             
             result = await ollama.classify_title(
                 test_case['title'], 
-                test_case['company'], 
+                test_case['tool_name'], 
                 client=client
             )
             
