@@ -19,7 +19,7 @@ class OllamaClient:
     Simple Ollama client for local LLM inference using structured outputs.
     Assumes Ollama is running locally on port 11434.
     """
-    def __init__(self, model="llama3.2:latest"):
+    def __init__(self, model="llama3.3:latest"):
         self.base_url = "http://localhost:11434"
         self.model = model
 

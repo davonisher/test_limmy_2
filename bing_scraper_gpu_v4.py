@@ -532,7 +532,7 @@ class GPUAcceleratedScraper:
 
 async def main():
     scraper = GPUAcceleratedScraper(max_concurrent=20, gpu_batch_size=1000)
-    await scraper.scrape_all_tools()
+    await scraper.scrape_all_companies()
 
 if __name__ == "__main__":
     asyncio.run(main())
