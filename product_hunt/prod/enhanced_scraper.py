@@ -267,14 +267,14 @@ async def main():
     """Main function to run the scraper."""
     # Define input and output file paths
     csv_file_path = TOOLS_CSV_PATH  # Use the CSV path defined at the top
-    output_file_path = "scraped_results4.csv"
+    output_file_path = "scraped_results5.csv"
     
     print("Starting Product Hunt scraper (server optimized)...")
     print(f"Input CSV: {csv_file_path}")
     print(f"Output CSV: {output_file_path}")
     
     # Sample websites - adjust sample_size as needed
-    results = await scrape_csv_file(csv_file_path, output_file_path, sample_size=10)
+    results = await scrape_csv_file(csv_file_path, output_file_path, sample_size=500)
     
     # Display first few results
     if results:
