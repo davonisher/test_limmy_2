@@ -13,8 +13,6 @@ import logging
 from datetime import datetime
 import os
 import httpx
-from pydantic import BaseModel
-from typing import Literal
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -22,12 +20,6 @@ logger = logging.getLogger(__name__)
 
 # Load companies from CSV file
 TOOLS_CSV_PATH = 'top_1000_tools.csv'
-
-# Structured output schema for classification
-class ArticleClassification(BaseModel):
-    category: Literal["feature update", "funding", "news article", "irrelevant"]
-    company_relevance: bool
-    reasoning: str
 
 def load_companies_from_csv():
     """Load AI tool companies from CSV file"""
@@ -56,112 +48,80 @@ def chunked(lst, n):
 
 class OllamaClient:
     """
-    Simple Ollama client for local LLM inference using structured outputs.
+    Simple Ollama client for local LLM inference.
     Assumes Ollama is running locally on port 11434.
     """
-    def __init__(self, model="llama3.3:latest"):
+    def __init__(self, model="llama3.2"):
         self.base_url = "http://localhost:11434"
         self.model = model
 
-    async def classify_title(self, title, company, client=None):
+    async def classify_title(self, title, client=None):
         """
-        Classify the article title using structured outputs.
-        Returns an ArticleClassification object.
+        Classify the article title as 'feature update', 'funding', or 'news article'.
+        Returns one of: 'feature update', 'funding', 'news article'
         """
         # Skip very short titles
         if len(title.strip()) < 10:
-            return ArticleClassification(
-                category="news article",
-                company_relevance=False,
-                reasoning="Title too short"
-            )
+            return "news article"
             
-        # Create a detailed prompt
-        prompt = f"""You are an expert news classifier. Analyze this article title and determine:
-
-1. CATEGORY: Classify into exactly one category:
-   - "feature update": ONLY if the article is about the company's new features, product releases, updates, launches, or announcements
-   - "funding": ONLY if the article is about the company's funding rounds, investments, fundraising, venture capital, or financial news
-   - "news article": for general news, partnerships, research, analysis, or other company-related news
-   - "irrelevant": if the article is NOT about the company at all
-
-2. COMPANY RELEVANCE: Determine if the article is actually about the company being searched for.
-
-COMPANY BEING SEARCHED: {company}
-ARTICLE TITLE: "{title}"
-
-IMPORTANT RULES:
-- Only classify as "feature update" or "funding" if the article is DIRECTLY about {company}
-- If the article mentions {company} but is not about their features/funding, use "news article"
-- If the article doesn't mention {company} at all, use "irrelevant"
-- Be very strict about company relevance
-
-Return as JSON with the specified structure."""
-
+        prompt = (
+            f"You are a news classifier. Classify this article title into exactly one of these three categories:\n"
+            f"- 'feature update': for new features, product releases, updates, launches\n"
+            f"- 'funding': for funding rounds, investments, fundraising, venture capital\n"
+            f"- 'news article': for general news, partnerships, research, analysis\n\n"
+            f"Title: \"{title}\"\n"
+            f"Category (respond with only the category name):"
+        )
         data = {
             "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
+            "prompt": prompt,
             "stream": False,
-            "format": ArticleClassification.model_json_schema(),
             "options": {
                 "temperature": 0.1,  # Low temperature for more consistent classification
                 "top_p": 0.9
             }
         }
-        
         try:
             if client is None:
                 async with httpx.AsyncClient(timeout=30) as ac:
-                    response = await ac.post(f"{self.base_url}/api/chat", json=data)
+                    response = await ac.post(f"{self.base_url}/api/generate", json=data)
             else:
-                response = await client.post(f"{self.base_url}/api/chat", json=data)
+                response = await client.post(f"{self.base_url}/api/generate", json=data)
             response.raise_for_status()
             result = response.json()
+            # The response is expected to have a 'response' field with the model's answer
+            answer = result.get("response", "").strip()
             
-            # Parse the structured response
-            content = result.get("message", {}).get("content", "")
-            if content:
-                classification = ArticleClassification.model_validate_json(content)
-                return classification
-            else:
-                raise ValueError("No content in response")
-                
+            # Debug: log some responses to see what the model is returning
+            if len(answer) < 50:  # Only log short responses to avoid spam
+                logger.debug(f"Model response for '{title[:50]}...': '{answer}'")
+            
+            # More robust answer parsing - be more specific
+            answer_lower = answer.lower().strip()
+            
+            # Check for exact matches first
+            if answer_lower in ["feature update", "feature", "update"]:
+                return "feature update"
+            elif answer_lower in ["funding", "fund"]:
+                return "funding"
+            elif answer_lower in ["news article", "news", "article"]:
+                return "news article"
+            
+            # Check for funding-related keywords (most specific)
+            funding_keywords = ["funding", "fundraise", "fund raise", "investment", "raise", "funded", "series", "round", "venture", "capital"]
+            if any(keyword in answer_lower for keyword in funding_keywords):
+                return "funding"
+            
+            # Check for feature update keywords (more specific)
+            feature_keywords = ["feature", "update", "release", "launch", "new feature", "announces", "introduces"]
+            if any(keyword in answer_lower for keyword in feature_keywords):
+                return "feature update"
+            
+            # Default to news article
+            return "news article"
         except Exception as e:
             logger.warning(f"Ollama classification failed for title '{title}': {e}")
-            # Fallback to basic classification
-            company_lower = company.lower()
-            title_lower = title.lower()
-            company_relevance = company_lower in title_lower
-            
-            if not company_relevance:
-                return ArticleClassification(
-                    category="irrelevant",
-                    company_relevance=False,
-                    reasoning="Company name not found in title"
-                )
-            elif any(word in title_lower for word in ["funding", "fund", "investment", "raise", "series", "round"]):
-                return ArticleClassification(
-                    category="funding",
-                    company_relevance=True,
-                    reasoning="Funding-related keywords found"
-                )
-            elif any(word in title_lower for word in ["feature", "update", "release", "launch", "announce"]):
-                return ArticleClassification(
-                    category="feature update",
-                    company_relevance=True,
-                    reasoning="Feature update keywords found"
-                )
-            else:
-                return ArticleClassification(
-                    category="news article",
-                    company_relevance=True,
-                    reasoning="General company news"
-                )
+            return "news article"
 
 class GPUAcceleratedScraper:
     def __init__(self, max_concurrent=20, gpu_batch_size=1000):
@@ -187,7 +147,7 @@ class GPUAcceleratedScraper:
             logger.warning("GPU not available, using CPU.")
 
         # Initialize Ollama client
-        self.ollama = OllamaClient(model="llama3.3:latest")
+        self.ollama = OllamaClient(model="llama3.2")
     
     async def scrape_company_batch(self, browser, company_batch):
         """Scrape a batch of companies using Playwright with parallel tabs"""
@@ -200,8 +160,7 @@ class GPUAcceleratedScraper:
             # Navigate all tabs to their respective Bing News search
             tasks = []
             for page, company in zip(pages, company_batch):
-                # More specific search query to reduce irrelevant results
-                query = f'"{company}" AND (AI OR "artificial intelligence" OR "machine learning" OR "AI tool" OR "software" OR "technology")'
+                query = f'"{company}" AND (AI OR "AI tool")'
                 url = f'https://www.bing.com/news/search?q={query}&cc=us&setlang=en-us&qft=sortbydate%3d%221%22&form=YFNR'
                 tasks.append(page.goto(url))
             await asyncio.gather(*tasks)
@@ -318,38 +277,10 @@ class GPUAcceleratedScraper:
     async def classify_titles_with_ollama(self, df):
         """
         Classify all article titles in the DataFrame using Ollama.
-        Adds new columns 'ollama_category' and 'company_relevance'.
+        Adds a new column 'ollama_category' with values: 'feature update', 'funding', or 'news article'.
         """
-        # Pre-filter obviously irrelevant articles
-        logger.info(f"Pre-filtering {len(df)} articles for obvious irrelevance...")
-        
-        # Create a copy for filtering
-        filtered_df = df.copy()
-        
-        # Remove articles where company name is not in title (case insensitive)
-        company_in_title = []
-        for _, row in filtered_df.iterrows():
-            company = str(row['company']).lower()
-            title = str(row['title']).lower()
-            company_in_title.append(company in title)
-        
-        filtered_df['company_in_title'] = company_in_title
-        pre_filtered_df = filtered_df[filtered_df['company_in_title'] == True].copy()
-        
-        pre_filtered_count = len(df) - len(pre_filtered_df)
-        logger.info(f"Pre-filtered out {pre_filtered_count} articles where company name not in title")
-        logger.info(f"Remaining articles for LLM classification: {len(pre_filtered_df)}")
-        
-        if len(pre_filtered_df) == 0:
-            logger.warning("No articles remain after pre-filtering")
-            df['ollama_category'] = 'irrelevant'
-            df['company_relevance'] = False
-            return df
-        
-        titles = pre_filtered_df['title'].fillna('').astype(str).tolist()
-        companies = pre_filtered_df['company'].fillna('').astype(str).tolist()
+        titles = df['title'].fillna('').astype(str).tolist()
         categories = []
-        relevances = []
         
         logger.info(f"Starting Ollama classification for {len(titles)} titles using model: {self.ollama.model}")
 
@@ -359,40 +290,25 @@ class GPUAcceleratedScraper:
             batch_size = 50
             for i in range(0, len(titles), batch_size):
                 batch_titles = titles[i:i+batch_size]
-                batch_companies = companies[i:i+batch_size]
                 logger.info(f"Classifying batch {i//batch_size + 1}/{(len(titles)-1)//batch_size + 1} ({len(batch_titles)} titles)")
                 
-                tasks = [self.ollama.classify_title(title, company, client=client) 
-                        for title, company in zip(batch_titles, batch_companies)]
-                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+                tasks = [self.ollama.classify_title(title, client=client) for title in batch_titles]
+                batch_categories = await asyncio.gather(*tasks, return_exceptions=True)
                 
                 # Handle any exceptions in the batch
-                for j, result in enumerate(batch_results):
+                for j, result in enumerate(batch_categories):
                     if isinstance(result, Exception):
                         logger.warning(f"Classification failed for title '{batch_titles[j]}': {result}")
                         categories.append("news article")  # Default fallback
-                        relevances.append(False)
                     else:
-                        # Handle ArticleClassification object
-                        categories.append(result.category)
-                        relevances.append(result.company_relevance)
+                        categories.append(result)
                 
                 # Small delay between batches
                 await asyncio.sleep(1)
 
-        pre_filtered_df['ollama_category'] = categories
-        pre_filtered_df['company_relevance'] = relevances
-        
-        # Filter out irrelevant articles
-        relevant_df = pre_filtered_df[pre_filtered_df['company_relevance'] == True].copy()
-        irrelevant_count = len(pre_filtered_df) - len(relevant_df)
-        
-        logger.info(f"Completed Ollama classification.")
-        logger.info(f"Categories: {dict(pd.Series(categories).value_counts())}")
-        logger.info(f"Company relevance: {sum(relevances)}/{len(relevances)} articles relevant")
-        logger.info(f"Filtered out {irrelevant_count} irrelevant articles")
-        
-        return relevant_df
+        df['ollama_category'] = categories
+        logger.info(f"Completed Ollama classification. Categories: {dict(pd.Series(categories).value_counts())}")
+        return df
 
     def process_data_gpu(self, data):
         """Process scraped data using GPU acceleration (PyTorch)"""
@@ -521,7 +437,7 @@ class GPUAcceleratedScraper:
             fieldnames = [
                 'tool_id', 'company', 'tool_url', 'title', 'link', 'image_url', 
                 'source', 'snippet', 'title_length', 'snippet_length', 'has_image',
-                'positive_words', 'negative_words', 'sentiment_score', 'ollama_category', 'company_relevance'
+                'positive_words', 'negative_words', 'sentiment_score', 'ollama_category'
             ]
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
