@@ -1,0 +1,19 @@
+[Unit]
+Description=Product Hunt Scraper Cron Job
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+WorkingDirectory=/path/to/your/product_hunt/prod
+ExecStart=/usr/bin/python3 /path/to/your/product_hunt/prod/enhanced_scraper_cron.py --cron
+Restart=always
+RestartSec=60
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables (optional)
+# Environment=PYTHONPATH=/path/to/your/project
+
+[Install]
+WantedBy=multi-user.target 
