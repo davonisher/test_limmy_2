@@ -249,7 +249,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Load companies from CSV file
-TOOLS_CSV_PATH = 'product_hunt/PH_check1.csv'
+TOOLS_CSV_PATH = 'PH_check1.csv'
 
 def load_companies_from_csv():
     """Load AI tool companies from CSV file"""
