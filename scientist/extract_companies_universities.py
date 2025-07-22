@@ -25,7 +25,7 @@ class OllamaClient:
     Optimized Ollama client for high-throughput local LLM inference.
     Assumes Ollama is running locally on port 11434.
     """
-    def __init__(self, model="llama3.3:latest"):
+    def __init__(self, model="llama3.2:latest"):
         self.base_url = "http://localhost:11434"
         self.model = model
 
@@ -232,7 +232,7 @@ class ScientistAffiliationExtractor:
 async def main():
     # Initialize extractor
     csv_path = 'ai_scientists_multilabel_20250717_111542.csv'
-    extractor = ScientistAffiliationExtractor(csv_path, model="llama3.3:latest")
+    extractor = ScientistAffiliationExtractor(csv_path, model="llama3.2:latest")
     
     # Load data
     df = extractor.load_data()
