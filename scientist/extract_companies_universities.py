@@ -138,8 +138,13 @@ Return ONLY a valid JSON object with this exact structure:
                 
         except Exception as e:
             logger.warning(f"Ollama extraction failed for {name} with affiliation '{affiliation}': {e}")
-            # Fallback to basic extraction
-            return self._fallback_extraction(name, affiliation)
+            # Return empty result when LLM fails
+            return AffiliationExtraction(
+                companies=[],
+                universities=[],
+                primary_affiliation="LLM extraction failed",
+                reasoning=f"Ollama request failed: {str(e)}"
+            )
 
     def _manual_extraction(self, name, affiliation, content):
         """Manual extraction when JSON parsing fails but we have content"""
@@ -205,176 +210,14 @@ Return ONLY a valid JSON object with this exact structure:
             
         except Exception as e:
             logger.debug(f"Manual extraction also failed for {name}: {e}")
-            return self._fallback_extraction(name, affiliation)
+            # Return empty result when manual extraction fails
+            return AffiliationExtraction(
+                companies=[],
+                universities=[],
+                primary_affiliation="Manual extraction failed",
+                reasoning=f"Manual extraction from LLM response failed: {str(e)}"
+            )
 
-    def _fallback_extraction(self, name, affiliation):
-        """Fallback extraction when Ollama fails"""
-        affiliation_lower = affiliation.lower()
-        
-        # Common company keywords with their full names
-        company_mappings = {
-            'google': 'Google',
-            'microsoft': 'Microsoft', 
-            'openai': 'OpenAI',
-            'deepmind': 'DeepMind',
-            'meta': 'Meta',
-            'facebook': 'Facebook',
-            'apple': 'Apple',
-            'amazon': 'Amazon',
-            'nvidia': 'NVIDIA',
-            'intel': 'Intel',
-            'ibm': 'IBM',
-            'anthropic': 'Anthropic',
-            'cohere': 'Cohere',
-            'hugging face': 'Hugging Face',
-            'stability ai': 'Stability AI',
-            'waymo': 'Waymo',
-            'tesla': 'Tesla',
-            'uber': 'Uber',
-            'lyft': 'Lyft',
-            'airbnb': 'Airbnb',
-            'netflix': 'Netflix',
-            'spotify': 'Spotify',
-            'twitter': 'Twitter',
-            'linkedin': 'LinkedIn',
-            'salesforce': 'Salesforce',
-            'oracle': 'Oracle',
-            'adobe': 'Adobe',
-            'autodesk': 'Autodesk',
-            'cisco': 'Cisco',
-            'dell': 'Dell',
-            'safe superintelligence': 'Safe Superintelligence Inc',
-            'covariant': 'Covariant',
-            'vercept': 'Vercept',
-            'research': 'Research',
-            'lab': 'Lab',
-            'labs': 'Labs',
-            'inc': 'Inc',
-            'corp': 'Corp',
-            'llc': 'LLC',
-            'startup': 'Startup',
-            'foundation': 'Foundation'
-        }
-        
-        # Common university keywords with their full names
-        university_mappings = {
-            'university': 'University',
-            'college': 'College',
-            'institute': 'Institute',
-            'school': 'School',
-            'academy': 'Academy',
-            'polytechnic': 'Polytechnic',
-            'mit': 'MIT',
-            'stanford': 'Stanford University',
-            'berkeley': 'University of California, Berkeley',
-            'uc berkeley': 'University of California, Berkeley',
-            'harvard': 'Harvard University',
-            'yale': 'Yale University',
-            'princeton': 'Princeton University',
-            'columbia': 'Columbia University',
-            'cornell': 'Cornell University',
-            'penn': 'University of Pennsylvania',
-            'brown': 'Brown University',
-            'dartmouth': 'Dartmouth College',
-            'duke': 'Duke University',
-            'northwestern': 'Northwestern University',
-            'chicago': 'University of Chicago',
-            'caltech': 'Caltech',
-            'cmu': 'Carnegie Mellon University',
-            'gatech': 'Georgia Institute of Technology',
-            'georgia tech': 'Georgia Institute of Technology',
-            'ucla': 'University of California, Los Angeles',
-            'ucsd': 'University of California, San Diego',
-            'ucsb': 'University of California, Santa Barbara',
-            'ucdavis': 'University of California, Davis',
-            'uc irvine': 'University of California, Irvine',
-            'uc riverside': 'University of California, Riverside',
-            'uc merced': 'University of California, Merced',
-            'uc santa cruz': 'University of California, Santa Cruz',
-            'uc santa barbara': 'University of California, Santa Barbara',
-            'oxford': 'University of Oxford',
-            'cambridge': 'University of Cambridge',
-            'imperial': 'Imperial College London',
-            'ucl': 'University College London',
-            'kcl': 'King\'s College London',
-            'lse': 'London School of Economics',
-            'warwick': 'University of Warwick',
-            'bristol': 'University of Bristol',
-            'manchester': 'University of Manchester',
-            'edinburgh': 'University of Edinburgh',
-            'glasgow': 'University of Glasgow',
-            'birmingham': 'University of Birmingham',
-            'leeds': 'University of Leeds',
-            'sheffield': 'University of Sheffield',
-            'toronto': 'University of Toronto',
-            'waterloo': 'University of Waterloo',
-            'mcgill': 'McGill University',
-            'ubc': 'University of British Columbia',
-            'montreal': 'University of Montreal',
-            'alberta': 'University of Alberta',
-            'calgary': 'University of Calgary',
-            'freiburg': 'University of Freiburg',
-            'courant': 'Courant Institute',
-            'new york university': 'New York University',
-            'nyu': 'New York University'
-        }
-        
-        companies = []
-        universities = []
-        
-        # Extract companies using keyword matching
-        for keyword, full_name in company_mappings.items():
-            if keyword in affiliation_lower:
-                companies.append(full_name)
-        
-        # Extract universities using keyword matching
-        for keyword, full_name in university_mappings.items():
-            if keyword in affiliation_lower:
-                universities.append(full_name)
-        
-        # Try to extract more specific patterns
-        import re
-        
-        # Look for patterns like "Professor at X" or "VP at Y"
-        professor_patterns = [
-            r'professor\s+(?:of\s+)?[^,]*\s+(?:at\s+)?([^,\n]+)',
-            r'prof\s+(?:of\s+)?[^,]*\s+(?:at\s+)?([^,\n]+)',
-            r'vp\s+(?:of\s+)?[^,]*\s+(?:at\s+)?([^,\n]+)',
-            r'head\s+(?:of\s+)?[^,]*\s+(?:at\s+)?([^,\n]+)',
-            r'co-founder\s+(?:of\s+)?[^,]*\s+(?:at\s+)?([^,\n]+)',
-            r'chief\s+[^,]*\s+(?:at\s+)?([^,\n]+)'
-        ]
-        
-        for pattern in professor_patterns:
-            matches = re.findall(pattern, affiliation, re.IGNORECASE)
-            for match in matches:
-                match = match.strip()
-                if match and len(match) > 2:  # Avoid very short matches
-                    # Check if it looks like a university
-                    if any(uni_keyword in match.lower() for uni_keyword in ['university', 'college', 'institute', 'school']):
-                        if match not in universities:
-                            universities.append(match)
-                    # Check if it looks like a company
-                    elif any(comp_keyword in match.lower() for comp_keyword in ['inc', 'corp', 'llc', 'labs', 'research']):
-                        if match not in companies:
-                            companies.append(match)
-        
-        # Determine primary affiliation
-        primary_affiliation = affiliation
-        if companies and universities:
-            # If both present, use the first one mentioned
-            primary_affiliation = companies[0] if affiliation_lower.find(companies[0].lower()) < affiliation_lower.find(universities[0].lower()) else universities[0]
-        elif companies:
-            primary_affiliation = companies[0]
-        elif universities:
-            primary_affiliation = universities[0]
-        
-        return AffiliationExtraction(
-            companies=list(set(companies)),
-            universities=list(set(universities)),
-            primary_affiliation=primary_affiliation,
-            reasoning="Fallback keyword matching"
-        )
 
 class ScientistAffiliationExtractor:
     def __init__(self, csv_path, model="llama3.3:latest"):

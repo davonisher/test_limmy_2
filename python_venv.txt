@@ -1,0 +1,1 @@
+python3 -m venv .venv && source .venv/bin/activate && cd projects/test_limmy_2 && git pull origin master

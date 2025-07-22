@@ -12,3 +12,5 @@ torchaudio>=2.2.0
 setuptools>=65.0.0
 wheel>=0.38.0
 pydantic>=2.10.0
+pybase64>=1.4.1
+pathlib==1.0.1
