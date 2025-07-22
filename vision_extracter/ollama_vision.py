@@ -151,13 +151,13 @@ async def main():
     """
     Main function to analyze the specified AI tool website screenshot.
     """
-    image_path = "/Users/macbook/Library/CloudStorage/OneDrive-HvA/rmai/jobs/prod/test_limmy/vision_extracter/1photoai.com__complete_page.png"
+    image_path = "1photoai.com__complete_page.png"
     
     # Initialize vision client
-    vision_client = OllamaVisionClient(model="llama3.2-vision:latest")
+    vision_client = OllamaVisionClient(model="llava:7b")
     
     logger.info(f"Starting analysis of: {Path(image_path).name}")
-    logger.info("Make sure Ollama is running with a vision model (e.g., 'ollama run llama3.2-vision')")
+    logger.info("Make sure Ollama is running with a vision model (e.g., 'ollama run llava:7b')")
     
     try:
         # Generate description
