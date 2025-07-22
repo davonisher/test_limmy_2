@@ -85,66 +85,81 @@ Return ONLY a valid JSON object with this exact structure:
             }
         }
         
-        try:
-            if client is None:
-                async with httpx.AsyncClient(timeout=30) as ac:
-                    response = await ac.post(f"{self.base_url}/api/chat", json=data)
-            else:
-                response = await client.post(f"{self.base_url}/api/chat", json=data)
-            response.raise_for_status()
-            result = response.json()
-            
-            # Parse the structured response
-            content = result.get("message", {}).get("content", "")
-            if content:
-                # Try to extract JSON from the response
-                try:
-                    # First try direct parsing
-                    extraction = AffiliationExtraction.model_validate_json(content)
-                    return extraction
-                except Exception as json_error:
-                    # Try to extract JSON from the text if it's wrapped in markdown
-                    import re
-                    import json
+        # Add retry logic for failed requests
+        max_retries = 2
+        last_error = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                if client is None:
+                    async with httpx.AsyncClient(timeout=60) as ac:
+                        response = await ac.post(f"{self.base_url}/api/chat", json=data)
+                else:
+                    response = await client.post(f"{self.base_url}/api/chat", json=data)
                     
-                    # Look for JSON code blocks
-                    json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
-                    if json_match:
-                        try:
-                            json_str = json_match.group(1)
-                            extraction = AffiliationExtraction.model_validate_json(json_str)
-                            return extraction
-                        except Exception:
-                            pass
-                    
-                    # Try to find JSON object in the text
-                    json_match = re.search(r'\{[^{}]*"companies"[^{}]*"universities"[^{}]*\}', content, re.DOTALL)
-                    if json_match:
-                        try:
-                            json_str = json_match.group(0)
-                            extraction = AffiliationExtraction.model_validate_json(json_str)
-                            return extraction
-                        except Exception:
-                            pass
-                    
-                    # Log the actual response for debugging
-                    logger.debug(f"Failed to parse JSON for {name}. Response: {content[:200]}...")
-                    logger.debug(f"JSON parsing error: {json_error}")
-                    
-                    # Try manual extraction as last resort
-                    return self._manual_extraction(name, affiliation, content)
-            else:
-                raise ValueError("No content in response")
+                response.raise_for_status()
+                result = response.json()
                 
-        except Exception as e:
-            logger.warning(f"Ollama extraction failed for {name} with affiliation '{affiliation}': {e}")
-            # Return empty result when LLM fails
-            return AffiliationExtraction(
-                companies=[],
-                universities=[],
-                primary_affiliation="LLM extraction failed",
-                reasoning=f"Ollama request failed: {str(e)}"
-            )
+                # Parse the structured response
+                content = result.get("message", {}).get("content", "")
+                if content:
+                    # Try to extract JSON from the response
+                    try:
+                        # First try direct parsing
+                        extraction = AffiliationExtraction.model_validate_json(content)
+                        return extraction
+                    except Exception as json_error:
+                        # Try to extract JSON from the text if it's wrapped in markdown
+                        import re
+                        import json
+                        
+                        # Look for JSON code blocks
+                        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+                        if json_match:
+                            try:
+                                json_str = json_match.group(1)
+                                extraction = AffiliationExtraction.model_validate_json(json_str)
+                                return extraction
+                            except Exception:
+                                pass
+                        
+                        # Try to find JSON object in the text
+                        json_match = re.search(r'\{[^{}]*"companies"[^{}]*"universities"[^{}]*\}', content, re.DOTALL)
+                        if json_match:
+                            try:
+                                json_str = json_match.group(0)
+                                extraction = AffiliationExtraction.model_validate_json(json_str)
+                                return extraction
+                            except Exception:
+                                pass
+                        
+                        # Log the actual response for debugging
+                        logger.debug(f"Failed to parse JSON for {name}. Response: {content[:200]}...")
+                        logger.debug(f"JSON parsing error: {json_error}")
+                        
+                        # Try manual extraction as last resort
+                        return self._manual_extraction(name, affiliation, content)
+                else:
+                    raise ValueError("No content in response")
+                    
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    logger.debug(f"Attempt {attempt + 1} failed for {name}, retrying... Error: {e}")
+                    await asyncio.sleep(1)  # Wait before retry
+                    continue
+                else:
+                    # All attempts failed
+                    logger.warning(f"Ollama extraction failed for {name} with affiliation '{affiliation}' after {max_retries + 1} attempts: {e}")
+                    break
+        
+        # Return empty result when all attempts fail
+        return AffiliationExtraction(
+            companies=[],
+            universities=[],
+            primary_affiliation="LLM extraction failed",
+            reasoning=f"Ollama request failed after {max_retries + 1} attempts: {str(last_error)}"
+        )
 
     def _manual_extraction(self, name, affiliation, content):
         """Manual extraction when JSON parsing fails but we have content"""
@@ -238,13 +253,16 @@ class ScientistAffiliationExtractor:
     async def extract_affiliations(self, df):
         """
         Extract company and university information from all scientists using Ollama.
+        Saves progress every 50 scientists.
         """
         logger.info(f"Starting affiliation extraction for {len(df)} scientists...")
         
         # Use a single httpx.AsyncClient for efficiency
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=60) as client:  # Increased timeout
             # Process in smaller batches to avoid overwhelming Ollama
             batch_size = 20
+            save_interval = 50  # Save every 50 scientists
+            
             for i in range(0, len(df), batch_size):
                 batch_df = df.iloc[i:i+batch_size]
                 logger.info(f"Processing batch {i//batch_size + 1}/{(len(df)-1)//batch_size + 1} ({len(batch_df)} scientists)")
@@ -260,7 +278,8 @@ class ScientistAffiliationExtractor:
                 # Process results
                 for j, result in enumerate(batch_results):
                     if isinstance(result, Exception):
-                        logger.warning(f"Extraction failed for scientist {batch_df.iloc[j]['name']}: {result}")
+                        error_msg = str(result) if str(result) else "Unknown error"
+                        logger.warning(f"Extraction failed for scientist {batch_df.iloc[j]['name']}: {error_msg}")
                         # Add empty result
                         self.results.append({
                             'name': batch_df.iloc[j]['name'],
@@ -268,7 +287,7 @@ class ScientistAffiliationExtractor:
                             'companies': [],
                             'universities': [],
                             'primary_affiliation': 'Extraction failed',
-                            'reasoning': str(result)
+                            'reasoning': error_msg
                         })
                     else:
                         # Add successful result
@@ -281,8 +300,15 @@ class ScientistAffiliationExtractor:
                             'reasoning': result.reasoning
                         })
                 
+                # Save intermediate results every 50 scientists
+                if len(self.results) % save_interval == 0 or len(self.results) >= len(df):
+                    today_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    intermediate_filename = f'scientists_affiliations_intermediate_{len(self.results)}_{today_str}.csv'
+                    self.save_results(self.results, intermediate_filename)
+                    logger.info(f"Saved intermediate results: {len(self.results)} scientists processed")
+                
                 # Small delay between batches
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)  # Increased delay
         
         logger.info(f"Completed affiliation extraction for {len(self.results)} scientists")
         return self.results
