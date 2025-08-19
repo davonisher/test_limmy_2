@@ -1,1 +1,4 @@
 python3 -m venv .venv && source .venv/bin/activate && cd projects/test_limmy_2 && git pull origin master
+
+
+scp david@limmy:/home/david/projects/test_limmy_2/scientist/scientists_affiliations_extracted_20250722_134314.csv ~/Desktop/
